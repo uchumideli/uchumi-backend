@@ -1,12 +1,13 @@
 // routes/admin.js
 // Reporting endpoints for the admin dashboard. Every route here requires
-// a logged-in staff member (see middleware/auth.js).
+// a logged-in staff member with the 'admin' role — financial/reporting data
+// is not shown to 'staff' accounts, who only handle day-to-day order processing.
 const express = require('express');
 const db = require('../db/db');
-const { requireAuth } = require('../middleware/auth');
+const { requireAuth, requireRole } = require('../middleware/auth');
 
 const router = express.Router();
-router.use(requireAuth);
+router.use(requireAuth, requireRole('admin'));
 
 // GET /api/admin/summary — headline numbers for a dashboard homepage
 router.get('/summary', (req, res) => {
