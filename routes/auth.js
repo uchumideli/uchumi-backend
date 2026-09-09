@@ -3,7 +3,7 @@ const express = require('express');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const db = require('../db/db');
-const { requireAuth, JWT_SECRET } = require('../middleware/auth');
+const { requireAuth, requireRole, JWT_SECRET } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -15,17 +15,17 @@ router.post('/login', (req, res) => {
   }
 
   const user = db.prepare('SELECT * FROM admin_users WHERE username = ?').get(username);
-  if (!user || !bcrypt.compareSync(password, user.password_hash)) {
+  if (!user || !user.is_active || !bcrypt.compareSync(password, user.password_hash)) {
     return res.status(401).json({ error: 'Incorrect username or password' });
   }
 
-  const token = jwt.sign({ sub: user.id, username: user.username }, JWT_SECRET, { expiresIn: '12h' });
-  res.json({ token, username: user.username });
+  const token = jwt.sign({ sub: user.id, username: user.username, role: user.role }, JWT_SECRET, { expiresIn: '12h' });
+  res.json({ token, username: user.username, role: user.role });
 });
 
 // GET /api/auth/me — used by the dashboard to confirm a stored token is still valid
 router.get('/me', requireAuth, (req, res) => {
-  res.json({ username: req.user.username });
+  res.json({ username: req.user.username, role: req.user.role });
 });
 
 // POST /api/auth/change-password — logged-in user changes their own password
@@ -40,6 +40,46 @@ router.post('/change-password', requireAuth, (req, res) => {
   }
   const newHash = bcrypt.hashSync(new_password, 10);
   db.prepare('UPDATE admin_users SET password_hash = ? WHERE id = ?').run(newHash, user.id);
+  res.json({ updated: true });
+});
+
+// ---- Staff account management (admin role only) ----
+
+// GET /api/auth/users — list all staff accounts
+router.get('/users', requireAuth, requireRole('admin'), (req, res) => {
+  const rows = db.prepare('SELECT id, username, role, is_active, created_at FROM admin_users ORDER BY created_at ASC').all();
+  res.json(rows);
+});
+
+// POST /api/auth/users — create a new staff account
+router.post('/users', requireAuth, requireRole('admin'), (req, res) => {
+  const { username, password, role } = req.body;
+  if (!username || !password || password.length < 8) {
+    return res.status(400).json({ error: 'Username and a password of at least 8 characters are required' });
+  }
+  const finalRole = role === 'admin' ? 'admin' : 'staff';
+  const existing = db.prepare('SELECT id FROM admin_users WHERE username = ?').get(username);
+  if (existing) {
+    return res.status(400).json({ error: 'That username is already taken' });
+  }
+  const hash = bcrypt.hashSync(password, 10);
+  const result = db.prepare('INSERT INTO admin_users (username, password_hash, role) VALUES (?, ?, ?)').run(username, hash, finalRole);
+  res.status(201).json({ id: result.lastInsertRowid, username, role: finalRole });
+});
+
+// PUT /api/auth/users/:id — update a staff account's role or active status
+router.put('/users/:id', requireAuth, requireRole('admin'), (req, res) => {
+  const target = db.prepare('SELECT * FROM admin_users WHERE id = ?').get(req.params.id);
+  if (!target) return res.status(404).json({ error: 'User not found' });
+
+  if (target.id === req.user.sub && req.body.is_active === 0) {
+    return res.status(400).json({ error: "You can't deactivate your own account" });
+  }
+
+  const role = req.body.role === 'admin' ? 'admin' : (req.body.role === 'staff' ? 'staff' : target.role);
+  const isActive = req.body.is_active !== undefined ? (req.body.is_active ? 1 : 0) : target.is_active;
+
+  db.prepare('UPDATE admin_users SET role = ?, is_active = ? WHERE id = ?').run(role, isActive, target.id);
   res.json({ updated: true });
 });
 
