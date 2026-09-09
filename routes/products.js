@@ -1,7 +1,7 @@
 // routes/products.js
 const express = require('express');
 const db = require('../db/db');
-const { requireAuth } = require('../middleware/auth');
+const { requireAuth, requireRole } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -50,7 +50,7 @@ router.get('/meta/categories', (req, res) => {
 });
 
 // POST /api/products — create a new product (staff only)
-router.post('/', requireAuth, (req, res) => {
+router.post('/', requireAuth, requireRole('admin'), (req, res) => {
   const { name, code, unit, price, original_price, category_id, vat_rate, description, stock_qty } = req.body;
   if (!name || price == null) {
     return res.status(400).json({ error: 'name and price are required' });
@@ -64,7 +64,7 @@ router.post('/', requireAuth, (req, res) => {
 });
 
 // PUT /api/products/:id — update stock, price, etc. (staff only)
-router.put('/:id', requireAuth, (req, res) => {
+router.put('/:id', requireAuth, requireRole('admin'), (req, res) => {
   const existing = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Product not found' });
 
