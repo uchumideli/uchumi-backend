@@ -73,6 +73,8 @@ CREATE TABLE IF NOT EXISTS admin_users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   username TEXT NOT NULL UNIQUE,
   password_hash TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'staff',   -- 'admin' or 'staff'
+  is_active INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -80,5 +82,16 @@ CREATE INDEX IF NOT EXISTS idx_products_category ON products(category_id);
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
 CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items(order_id);
 `);
+
+// Safety migration: if an older database already has admin_users without
+// role/is_active (e.g. reused from before this feature existed), add them.
+const adminUserColumns = db.prepare("PRAGMA table_info(admin_users)").all().map(c => c.name);
+if (!adminUserColumns.includes('role')) {
+  db.exec("ALTER TABLE admin_users ADD COLUMN role TEXT NOT NULL DEFAULT 'staff'");
+  db.prepare("UPDATE admin_users SET role = 'admin' WHERE id = (SELECT MIN(id) FROM admin_users)").run();
+}
+if (!adminUserColumns.includes('is_active')) {
+  db.exec('ALTER TABLE admin_users ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1');
+}
 
 module.exports = db;
