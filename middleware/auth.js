@@ -24,4 +24,15 @@ function requireAuth(req, res, next) {
   }
 }
 
-module.exports = { requireAuth, JWT_SECRET };
+// Use after requireAuth to additionally restrict a route to one or more roles.
+// Example: router.get('/summary', requireAuth, requireRole('admin'), handler)
+function requireRole(...allowedRoles) {
+  return (req, res, next) => {
+    if (!req.user || !allowedRoles.includes(req.user.role)) {
+      return res.status(403).json({ error: 'You do not have permission to do that' });
+    }
+    next();
+  };
+}
+
+module.exports = { requireAuth, requireRole, JWT_SECRET };
