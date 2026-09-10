@@ -16,17 +16,6 @@ const adminRouter = require('./routes/admin');
 const app = express();
 const PORT = process.env.PORT || 4000;
 
-// Auto-seed products on first boot only — never re-runs once products exist,
-// so admin edits to price/stock are never silently overwritten on restart.
-const productCount = db.prepare('SELECT COUNT(*) AS n FROM products').get().n;
-if (productCount === 0) {
-  console.log('Database is empty — running initial product seed...');
-  seedProducts();
-}
-
-// Safe to call every boot — only creates an admin account if none exists yet.
-ensureDefaultAdmin();
-
 app.use(cors());
 app.use(express.json());
 
@@ -46,6 +35,31 @@ app.use((req, res) => {
   res.status(404).json({ error: 'Not found' });
 });
 
-app.listen(PORT, () => {
-  console.log(`Uchumi backend running on http://localhost:${PORT}`);
+async function start() {
+  // Creates tables if they don't exist yet, and runs any needed safety migrations.
+  // Safe to call every boot — CREATE TABLE IF NOT EXISTS never touches existing data.
+  await db.initSchema();
+
+  // Auto-seed products on first boot only — never re-runs once products exist,
+  // so admin edits to price/stock are never silently overwritten on restart.
+  const productCountRow = await db.get('SELECT COUNT(*) AS n FROM products');
+  if (productCountRow.n === 0) {
+    console.log('Database is empty — running initial product seed...');
+    await seedProducts();
+  }
+
+  // Safe to call every boot — only creates an admin account if none exists yet.
+  await ensureDefaultAdmin();
+
+  app.listen(PORT, () => {
+    console.log(`Uchumi backend running on http://localhost:${PORT}`);
+    console.log(process.env.TURSO_DATABASE_URL
+      ? 'Connected to Turso — data persists across restarts and deploys.'
+      : 'No TURSO_DATABASE_URL set — using a local file. This will NOT persist on Render redeploys.');
+  });
+}
+
+start().catch(e => {
+  console.error('Failed to start server:', e);
+  process.exit(1);
 });
