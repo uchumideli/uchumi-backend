@@ -51,14 +51,14 @@ router.get('/meta/categories', (req, res) => {
 
 // POST /api/products — create a new product (staff only)
 router.post('/', requireAuth, requireRole('admin'), (req, res) => {
-  const { name, code, unit, price, original_price, category_id, vat_rate, description, stock_qty } = req.body;
+  const { name, code, unit, price, original_price, category_id, vat_rate, description, stock_qty, image_url } = req.body;
   if (!name || price == null) {
     return res.status(400).json({ error: 'name and price are required' });
   }
   const result = db.prepare(`
-    INSERT INTO products (name, code, unit, price, original_price, category_id, vat_rate, description, stock_qty)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(name, code || null, unit || null, price, original_price || null, category_id || null, vat_rate || 0, description || null, stock_qty || 0);
+    INSERT INTO products (name, code, unit, price, original_price, category_id, vat_rate, description, stock_qty, image_url)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(name, code || null, unit || null, price, original_price || null, category_id || null, vat_rate || 0, description || null, stock_qty || 0, image_url || null);
 
   res.status(201).json({ id: result.lastInsertRowid });
 });
@@ -68,7 +68,7 @@ router.put('/:id', requireAuth, requireRole('admin'), (req, res) => {
   const existing = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Product not found' });
 
-  const fields = ['name', 'code', 'unit', 'price', 'original_price', 'category_id', 'vat_rate', 'description', 'stock_qty', 'is_active'];
+  const fields = ['name', 'code', 'unit', 'price', 'original_price', 'category_id', 'vat_rate', 'description', 'stock_qty', 'is_active', 'image_url'];
   const updates = {};
   for (const f of fields) {
     if (req.body[f] !== undefined) updates[f] = req.body[f];
@@ -76,9 +76,9 @@ router.put('/:id', requireAuth, requireRole('admin'), (req, res) => {
   const merged = { ...existing, ...updates };
 
   db.prepare(`
-    UPDATE products SET name=?, code=?, unit=?, price=?, original_price=?, category_id=?, vat_rate=?, description=?, stock_qty=?, is_active=?
+    UPDATE products SET name=?, code=?, unit=?, price=?, original_price=?, category_id=?, vat_rate=?, description=?, stock_qty=?, is_active=?, image_url=?
     WHERE id=?
-  `).run(merged.name, merged.code, merged.unit, merged.price, merged.original_price, merged.category_id, merged.vat_rate, merged.description, merged.stock_qty, merged.is_active, req.params.id);
+  `).run(merged.name, merged.code, merged.unit, merged.price, merged.original_price, merged.category_id, merged.vat_rate, merged.description, merged.stock_qty, merged.is_active, merged.image_url, req.params.id);
 
   res.json({ updated: true });
 });
