@@ -75,6 +75,9 @@ router.put('/users/:id', requireAuth, requireRole('admin'), (req, res) => {
   if (target.id === req.user.sub && req.body.is_active === 0) {
     return res.status(400).json({ error: "You can't deactivate your own account" });
   }
+  if (target.id === req.user.sub && req.body.role === 'staff') {
+    return res.status(400).json({ error: "You can't remove your own admin rights — ask another admin to do it" });
+  }
 
   const role = req.body.role === 'admin' ? 'admin' : (req.body.role === 'staff' ? 'staff' : target.role);
   const isActive = req.body.is_active !== undefined ? (req.body.is_active ? 1 : 0) : target.is_active;
