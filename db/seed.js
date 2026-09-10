@@ -36,65 +36,50 @@ const PRODUCTS = [
   { name: 'McVities Original Digestive', code: '205939218', unit: '250g', price: 305, category: 'Snacks', vat_rate: 16, stock_qty: 65, description: 'Classic wheat digestive biscuits, a source of fibre, perfect with tea or on their own.' },
 ];
 
-function seedProducts() {
-  const insertCategory = db.prepare('INSERT OR IGNORE INTO categories (name) VALUES (?)');
-  const getCategoryId = db.prepare('SELECT id FROM categories WHERE name = ?');
-  const insertProduct = db.prepare(`
-    INSERT INTO products (name, code, unit, price, original_price, category_id, vat_rate, description, stock_qty)
-    VALUES (@name, @code, @unit, @price, @original_price, @category_id, @vat_rate, @description, @stock_qty)
-    ON CONFLICT(code) DO UPDATE SET
-      name=excluded.name, unit=excluded.unit, price=excluded.price,
-      original_price=excluded.original_price, category_id=excluded.category_id,
-      vat_rate=excluded.vat_rate, description=excluded.description, stock_qty=excluded.stock_qty
-  `);
+async function seedProducts() {
+  for (const name of CATEGORIES) {
+    await db.run('INSERT OR IGNORE INTO categories (name) VALUES (?)', [name]);
+  }
 
-  const seed = db.transaction(() => {
-    for (const name of CATEGORIES) insertCategory.run(name);
+  for (const p of PRODUCTS) {
+    const cat = await db.get('SELECT id FROM categories WHERE name = ?', [p.category]);
+    await db.run(`
+      INSERT INTO products (name, code, unit, price, original_price, category_id, vat_rate, description, stock_qty)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(code) DO UPDATE SET
+        name=excluded.name, unit=excluded.unit, price=excluded.price,
+        original_price=excluded.original_price, category_id=excluded.category_id,
+        vat_rate=excluded.vat_rate, description=excluded.description, stock_qty=excluded.stock_qty
+    `, [p.name, p.code, p.unit, p.price, p.original_price || null, cat.id, p.vat_rate, p.description, p.stock_qty]);
+  }
 
-    for (const p of PRODUCTS) {
-      const cat = getCategoryId.get(p.category);
-      insertProduct.run({
-        name: p.name,
-        code: p.code,
-        unit: p.unit,
-        price: p.price,
-        original_price: p.original_price || null,
-        category_id: cat.id,
-        vat_rate: p.vat_rate,
-        description: p.description,
-        stock_qty: p.stock_qty,
-      });
-    }
-  });
-
-  seed();
   console.log(`Seed complete: ${CATEGORIES.length} categories, ${PRODUCTS.length} products.`);
 }
 
 // Creates a default admin login only if no admin user exists yet.
 // Safe to call on every server boot — never overwrites an existing account
 // or a password that's already been changed.
-function ensureDefaultAdmin() {
-  const existingAdmin = db.prepare('SELECT id FROM admin_users LIMIT 1').get();
+async function ensureDefaultAdmin() {
+  const existingAdmin = await db.get('SELECT id FROM admin_users LIMIT 1');
   if (existingAdmin) return;
 
   const defaultUsername = process.env.ADMIN_USERNAME || 'admin';
   const defaultPassword = process.env.ADMIN_PASSWORD || 'ChangeMe123!';
   const hash = bcrypt.hashSync(defaultPassword, 10);
-  db.prepare('INSERT INTO admin_users (username, password_hash, role) VALUES (?, ?, ?)').run(defaultUsername, hash, 'admin');
+  await db.run('INSERT INTO admin_users (username, password_hash, role) VALUES (?, ?, ?)', [defaultUsername, hash, 'admin']);
   console.log(`Created default admin login — username: "${defaultUsername}", password: "${defaultPassword}"`);
   console.log('IMPORTANT: change this password after your first login.');
 }
 
-function runSeed() {
-  seedProducts();
-  ensureDefaultAdmin();
+async function runSeed() {
+  await db.initSchema();
+  await seedProducts();
+  await ensureDefaultAdmin();
 }
 
 // Only auto-run when executed directly (`npm run seed`).
-// When required as a module (server.js auto-seed check), it just exports the functions.
 if (require.main === module) {
-  runSeed();
+  runSeed().then(() => process.exit(0)).catch(e => { console.error(e); process.exit(1); });
 }
 
 module.exports = { runSeed, seedProducts, ensureDefaultAdmin };
