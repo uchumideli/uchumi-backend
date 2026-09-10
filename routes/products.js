@@ -24,98 +24,129 @@ function isRequestingAdmin(req) {
 }
 
 // GET /api/products — list active products (or all, for an admin who asks for it)
-router.get('/', (req, res) => {
-  const { category, q, include_inactive } = req.query;
-  const showInactiveToo = include_inactive === '1' && isRequestingAdmin(req);
+router.get('/', async (req, res) => {
+  try {
+    const { category, q, include_inactive } = req.query;
+    const showInactiveToo = include_inactive === '1' && isRequestingAdmin(req);
 
-  let sql = `
-    SELECT p.*, c.name AS category_name
-    FROM products p
-    LEFT JOIN categories c ON c.id = p.category_id
-  `;
-  const conditions = [];
-  const params = [];
+    let sql = `
+      SELECT p.*, c.name AS category_name
+      FROM products p
+      LEFT JOIN categories c ON c.id = p.category_id
+    `;
+    const conditions = [];
+    const params = [];
 
-  if (!showInactiveToo) conditions.push('p.is_active = 1');
-  if (category) { conditions.push('c.name = ?'); params.push(category); }
-  if (q) { conditions.push('(p.name LIKE ? OR p.code LIKE ?)'); params.push(`%${q}%`, `%${q}%`); }
+    if (!showInactiveToo) conditions.push('p.is_active = 1');
+    if (category) { conditions.push('c.name = ?'); params.push(category); }
+    if (q) { conditions.push('(p.name LIKE ? OR p.code LIKE ?)'); params.push(`%${q}%`, `%${q}%`); }
 
-  if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ');
-  sql += ' ORDER BY p.name ASC';
+    if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ');
+    sql += ' ORDER BY p.name ASC';
 
-  const rows = db.prepare(sql).all(...params);
-  res.json(rows);
+    const rows = await db.all(sql, params);
+    res.json(rows);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Failed to load products' });
+  }
 });
 
 // GET /api/products/:id — single product detail
-router.get('/:id', (req, res) => {
-  const row = db.prepare(`
-    SELECT p.*, c.name AS category_name
-    FROM products p
-    LEFT JOIN categories c ON c.id = p.category_id
-    WHERE p.id = ?
-  `).get(req.params.id);
+router.get('/:id', async (req, res) => {
+  try {
+    const row = await db.get(`
+      SELECT p.*, c.name AS category_name
+      FROM products p
+      LEFT JOIN categories c ON c.id = p.category_id
+      WHERE p.id = ?
+    `, [req.params.id]);
 
-  if (!row) return res.status(404).json({ error: 'Product not found' });
-  res.json(row);
+    if (!row) return res.status(404).json({ error: 'Product not found' });
+    res.json(row);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Failed to load product' });
+  }
 });
 
 // GET /api/categories — list all categories
-router.get('/meta/categories', (req, res) => {
-  const rows = db.prepare('SELECT * FROM categories ORDER BY name ASC').all();
-  res.json(rows);
+router.get('/meta/categories', async (req, res) => {
+  try {
+    const rows = await db.all('SELECT * FROM categories ORDER BY name ASC');
+    res.json(rows);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Failed to load categories' });
+  }
 });
 
 // POST /api/products — create a new product (staff only)
-router.post('/', requireAuth, requireRole('admin'), (req, res) => {
-  const { name, code, unit, price, original_price, category_id, vat_rate, description, stock_qty, image_url } = req.body;
-  if (!name || price == null) {
-    return res.status(400).json({ error: 'name and price are required' });
-  }
-  const result = db.prepare(`
-    INSERT INTO products (name, code, unit, price, original_price, category_id, vat_rate, description, stock_qty, image_url)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(name, code || null, unit || null, price, original_price || null, category_id || null, vat_rate || 0, description || null, stock_qty || 0, image_url || null);
+router.post('/', requireAuth, requireRole('admin'), async (req, res) => {
+  try {
+    const { name, code, unit, price, original_price, category_id, vat_rate, description, stock_qty, image_url } = req.body;
+    if (!name || price == null) {
+      return res.status(400).json({ error: 'name and price are required' });
+    }
+    const result = await db.run(`
+      INSERT INTO products (name, code, unit, price, original_price, category_id, vat_rate, description, stock_qty, image_url)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [name, code || null, unit || null, price, original_price || null, category_id || null, vat_rate || 0, description || null, stock_qty || 0, image_url || null]);
 
-  res.status(201).json({ id: result.lastInsertRowid });
+    res.status(201).json({ id: result.lastInsertRowid });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Failed to create product' });
+  }
 });
 
 // PUT /api/products/:id — update stock, price, etc. (staff only)
-router.put('/:id', requireAuth, requireRole('admin'), (req, res) => {
-  const existing = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
-  if (!existing) return res.status(404).json({ error: 'Product not found' });
+router.put('/:id', requireAuth, requireRole('admin'), async (req, res) => {
+  try {
+    const existing = await db.get('SELECT * FROM products WHERE id = ?', [req.params.id]);
+    if (!existing) return res.status(404).json({ error: 'Product not found' });
 
-  const fields = ['name', 'code', 'unit', 'price', 'original_price', 'category_id', 'vat_rate', 'description', 'stock_qty', 'is_active', 'image_url'];
-  const updates = {};
-  for (const f of fields) {
-    if (req.body[f] !== undefined) updates[f] = req.body[f];
+    const fields = ['name', 'code', 'unit', 'price', 'original_price', 'category_id', 'vat_rate', 'description', 'stock_qty', 'is_active', 'image_url'];
+    const updates = {};
+    for (const f of fields) {
+      if (req.body[f] !== undefined) updates[f] = req.body[f];
+    }
+    const merged = { ...existing, ...updates };
+
+    await db.run(`
+      UPDATE products SET name=?, code=?, unit=?, price=?, original_price=?, category_id=?, vat_rate=?, description=?, stock_qty=?, is_active=?, image_url=?
+      WHERE id=?
+    `, [merged.name, merged.code, merged.unit, merged.price, merged.original_price, merged.category_id, merged.vat_rate, merged.description, merged.stock_qty, merged.is_active, merged.image_url, req.params.id]);
+
+    res.json({ updated: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Failed to update product' });
   }
-  const merged = { ...existing, ...updates };
-
-  db.prepare(`
-    UPDATE products SET name=?, code=?, unit=?, price=?, original_price=?, category_id=?, vat_rate=?, description=?, stock_qty=?, is_active=?, image_url=?
-    WHERE id=?
-  `).run(merged.name, merged.code, merged.unit, merged.price, merged.original_price, merged.category_id, merged.vat_rate, merged.description, merged.stock_qty, merged.is_active, merged.image_url, req.params.id);
-
-  res.json({ updated: true });
 });
 
 // DELETE /api/products/:id — permanently remove a product (staff only).
 // Blocked if the product appears in any past order, since that would break
 // order history. Archive it instead (PUT with is_active: 0) in that case.
-router.delete('/:id', requireAuth, requireRole('admin'), (req, res) => {
-  const existing = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
-  if (!existing) return res.status(404).json({ error: 'Product not found' });
+router.delete('/:id', requireAuth, requireRole('admin'), async (req, res) => {
+  try {
+    const existing = await db.get('SELECT * FROM products WHERE id = ?', [req.params.id]);
+    if (!existing) return res.status(404).json({ error: 'Product not found' });
 
-  const orderCount = db.prepare('SELECT COUNT(*) AS n FROM order_items WHERE product_id = ?').get(req.params.id).n;
-  if (orderCount > 0) {
-    return res.status(400).json({
-      error: `This product appears in ${orderCount} past order(s) and can't be permanently deleted. Archive it instead to hide it from the store.`
-    });
+    const orderCountRow = await db.get('SELECT COUNT(*) AS n FROM order_items WHERE product_id = ?', [req.params.id]);
+    const orderCount = orderCountRow.n;
+    if (orderCount > 0) {
+      return res.status(400).json({
+        error: `This product appears in ${orderCount} past order(s) and can't be permanently deleted. Archive it instead to hide it from the store.`
+      });
+    }
+
+    await db.run('DELETE FROM products WHERE id = ?', [req.params.id]);
+    res.json({ deleted: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Failed to delete product' });
   }
-
-  db.prepare('DELETE FROM products WHERE id = ?').run(req.params.id);
-  res.json({ deleted: true });
 });
 
 module.exports = router;
