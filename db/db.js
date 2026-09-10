@@ -1,97 +1,149 @@
 // db/db.js
-// Single SQLite database file — this is the source of truth for the whole store.
-// Swappable for PostgreSQL/MySQL later without changing the route logic much,
-// since queries are kept simple and centralized here.
+// Database layer using Turso (libSQL) — a hosted, SQLite-compatible database
+// with a genuinely persistent free tier. This is the fix for the problem where
+// Render's free web service wipes its local filesystem on every deploy.
+//
+// Locally (no TURSO_DATABASE_URL set), this same client falls back to a local
+// SQLite file automatically, so development/testing works exactly the same
+// way it always did — no separate code path needed.
 
 const path = require('path');
-const Database = require('better-sqlite3');
+const { createClient } = require('@libsql/client');
 
-const DB_PATH = path.join(__dirname, 'uchumi.sqlite');
-const db = new Database(DB_PATH);
+const LOCAL_DB_PATH = path.join(__dirname, 'uchumi.sqlite');
 
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
+const client = createClient({
+  url: process.env.TURSO_DATABASE_URL || `file:${LOCAL_DB_PATH}`,
+  authToken: process.env.TURSO_AUTH_TOKEN || undefined,
+});
 
-db.exec(`
-CREATE TABLE IF NOT EXISTS categories (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT NOT NULL UNIQUE
-);
+// ---- small async helpers so route files stay close to how they read before ----
 
-CREATE TABLE IF NOT EXISTS products (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT NOT NULL,
-  code TEXT UNIQUE,
-  unit TEXT,
-  price INTEGER NOT NULL,           -- stored in whole KES to avoid float rounding issues
-  original_price INTEGER,           -- optional, for "deals" / sale pricing
-  category_id INTEGER REFERENCES categories(id),
-  image_url TEXT,
-  vat_rate INTEGER NOT NULL DEFAULT 0,  -- 0 or 16 (percent)
-  description TEXT,
-  stock_qty INTEGER NOT NULL DEFAULT 0,
-  is_active INTEGER NOT NULL DEFAULT 1,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS customers (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT,
-  phone TEXT UNIQUE,
-  email TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS orders (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  order_code TEXT UNIQUE NOT NULL,
-  customer_id INTEGER REFERENCES customers(id),
-  status TEXT NOT NULL DEFAULT 'pending',  -- pending -> paid -> fulfilled -> delivered / cancelled
-  delivery_zone TEXT,
-  delivery_fee INTEGER NOT NULL DEFAULT 0,
-  delivery_address TEXT,
-  phone TEXT,
-  subtotal INTEGER NOT NULL,
-  vat_total INTEGER NOT NULL DEFAULT 0,
-  total INTEGER NOT NULL,
-  payment_method TEXT DEFAULT 'mpesa',
-  mpesa_receipt TEXT,               -- filled in once M-Pesa integration is added
-  payment_status TEXT NOT NULL DEFAULT 'unpaid', -- unpaid -> paid -> failed
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS order_items (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
-  product_id INTEGER NOT NULL REFERENCES products(id),
-  product_name TEXT NOT NULL,     -- snapshot, in case product name changes later
-  unit_price INTEGER NOT NULL,    -- snapshot of price at time of order
-  qty INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS admin_users (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  username TEXT NOT NULL UNIQUE,
-  password_hash TEXT NOT NULL,
-  role TEXT NOT NULL DEFAULT 'staff',   -- 'admin' or 'staff'
-  is_active INTEGER NOT NULL DEFAULT 1,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE INDEX IF NOT EXISTS idx_products_category ON products(category_id);
-CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
-CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items(order_id);
-`);
-
-// Safety migration: if an older database already has admin_users without
-// role/is_active (e.g. reused from before this feature existed), add them.
-const adminUserColumns = db.prepare("PRAGMA table_info(admin_users)").all().map(c => c.name);
-if (!adminUserColumns.includes('role')) {
-  db.exec("ALTER TABLE admin_users ADD COLUMN role TEXT NOT NULL DEFAULT 'staff'");
-  db.prepare("UPDATE admin_users SET role = 'admin' WHERE id = (SELECT MIN(id) FROM admin_users)").run();
-}
-if (!adminUserColumns.includes('is_active')) {
-  db.exec('ALTER TABLE admin_users ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1');
+async function get(sql, args = []) {
+  const rs = await client.execute({ sql, args });
+  return rs.rows[0] || null;
 }
 
-module.exports = db;
+async function all(sql, args = []) {
+  const rs = await client.execute({ sql, args });
+  return rs.rows;
+}
+
+async function run(sql, args = []) {
+  const rs = await client.execute({ sql, args });
+  return { lastInsertRowid: Number(rs.lastInsertRowid), changes: rs.rowsAffected };
+}
+
+// Runs a group of statements atomically. `fn` receives a `tx` object with the
+// same get/all/run shape as above, scoped to the transaction.
+async function transaction(fn) {
+  const tx = await client.transaction('write');
+  const txHelpers = {
+    get: async (sql, args = []) => {
+      const rs = await tx.execute({ sql, args });
+      return rs.rows[0] || null;
+    },
+    all: async (sql, args = []) => {
+      const rs = await tx.execute({ sql, args });
+      return rs.rows;
+    },
+    run: async (sql, args = []) => {
+      const rs = await tx.execute({ sql, args });
+      return { lastInsertRowid: Number(rs.lastInsertRowid), changes: rs.rowsAffected };
+    },
+  };
+  try {
+    const result = await fn(txHelpers);
+    await tx.commit();
+    return result;
+  } catch (e) {
+    await tx.rollback();
+    throw e;
+  }
+}
+
+async function initSchema() {
+  await client.execute('PRAGMA foreign_keys = ON');
+
+  const statements = [
+    `CREATE TABLE IF NOT EXISTS categories (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE
+    )`,
+    `CREATE TABLE IF NOT EXISTS products (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      code TEXT UNIQUE,
+      unit TEXT,
+      price INTEGER NOT NULL,
+      original_price INTEGER,
+      category_id INTEGER REFERENCES categories(id),
+      image_url TEXT,
+      vat_rate INTEGER NOT NULL DEFAULT 0,
+      description TEXT,
+      stock_qty INTEGER NOT NULL DEFAULT 0,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+    `CREATE TABLE IF NOT EXISTS customers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT,
+      phone TEXT UNIQUE,
+      email TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+    `CREATE TABLE IF NOT EXISTS orders (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      order_code TEXT UNIQUE NOT NULL,
+      customer_id INTEGER REFERENCES customers(id),
+      status TEXT NOT NULL DEFAULT 'pending',
+      delivery_zone TEXT,
+      delivery_fee INTEGER NOT NULL DEFAULT 0,
+      delivery_address TEXT,
+      phone TEXT,
+      subtotal INTEGER NOT NULL,
+      vat_total INTEGER NOT NULL DEFAULT 0,
+      total INTEGER NOT NULL,
+      payment_method TEXT DEFAULT 'mpesa',
+      mpesa_receipt TEXT,
+      payment_status TEXT NOT NULL DEFAULT 'unpaid',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+    `CREATE TABLE IF NOT EXISTS order_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+      product_id INTEGER NOT NULL REFERENCES products(id),
+      product_name TEXT NOT NULL,
+      unit_price INTEGER NOT NULL,
+      qty INTEGER NOT NULL
+    )`,
+    `CREATE TABLE IF NOT EXISTS admin_users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'staff',
+      is_active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_products_category ON products(category_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)`,
+    `CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items(order_id)`,
+  ];
+
+  for (const sql of statements) {
+    await client.execute(sql);
+  }
+
+  // Safety migration for databases created before role/is_active existed.
+  const cols = await client.execute("PRAGMA table_info(admin_users)");
+  const colNames = cols.rows.map(c => c.name);
+  if (!colNames.includes('role')) {
+    await client.execute("ALTER TABLE admin_users ADD COLUMN role TEXT NOT NULL DEFAULT 'staff'");
+    await client.execute("UPDATE admin_users SET role = 'admin' WHERE id = (SELECT MIN(id) FROM admin_users)");
+  }
+  if (!colNames.includes('is_active')) {
+    await client.execute('ALTER TABLE admin_users ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1');
+  }
+}
+
+module.exports = { client, get, all, run, transaction, initSchema };
