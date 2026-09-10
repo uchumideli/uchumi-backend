@@ -1,29 +1,46 @@
 // routes/products.js
 const express = require('express');
+const jwt = require('jsonwebtoken');
 const db = require('../db/db');
-const { requireAuth, requireRole } = require('../middleware/auth');
+const { requireAuth, requireRole, JWT_SECRET } = require('../middleware/auth');
 
 const router = express.Router();
 
-// GET /api/products — list all active products, optionally filtered by category or search query
+// This route is public (storefront browsing needs no login), but admins
+// viewing the dashboard can optionally see archived products too by passing
+// ?include_inactive=1 with a valid admin token. A customer request without
+// a valid admin token always gets active products only, regardless of the
+// query param — this check never widens access for anyone but a real admin.
+function isRequestingAdmin(req) {
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  if (!token) return false;
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    return payload.role === 'admin';
+  } catch (e) {
+    return false;
+  }
+}
+
+// GET /api/products — list active products (or all, for an admin who asks for it)
 router.get('/', (req, res) => {
-  const { category, q } = req.query;
+  const { category, q, include_inactive } = req.query;
+  const showInactiveToo = include_inactive === '1' && isRequestingAdmin(req);
+
   let sql = `
     SELECT p.*, c.name AS category_name
     FROM products p
     LEFT JOIN categories c ON c.id = p.category_id
-    WHERE p.is_active = 1
   `;
+  const conditions = [];
   const params = [];
 
-  if (category) {
-    sql += ' AND c.name = ?';
-    params.push(category);
-  }
-  if (q) {
-    sql += ' AND (p.name LIKE ? OR p.code LIKE ?)';
-    params.push(`%${q}%`, `%${q}%`);
-  }
+  if (!showInactiveToo) conditions.push('p.is_active = 1');
+  if (category) { conditions.push('c.name = ?'); params.push(category); }
+  if (q) { conditions.push('(p.name LIKE ? OR p.code LIKE ?)'); params.push(`%${q}%`, `%${q}%`); }
+
+  if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ');
   sql += ' ORDER BY p.name ASC';
 
   const rows = db.prepare(sql).all(...params);
@@ -81,6 +98,24 @@ router.put('/:id', requireAuth, requireRole('admin'), (req, res) => {
   `).run(merged.name, merged.code, merged.unit, merged.price, merged.original_price, merged.category_id, merged.vat_rate, merged.description, merged.stock_qty, merged.is_active, merged.image_url, req.params.id);
 
   res.json({ updated: true });
+});
+
+// DELETE /api/products/:id — permanently remove a product (staff only).
+// Blocked if the product appears in any past order, since that would break
+// order history. Archive it instead (PUT with is_active: 0) in that case.
+router.delete('/:id', requireAuth, requireRole('admin'), (req, res) => {
+  const existing = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Product not found' });
+
+  const orderCount = db.prepare('SELECT COUNT(*) AS n FROM order_items WHERE product_id = ?').get(req.params.id).n;
+  if (orderCount > 0) {
+    return res.status(400).json({
+      error: `This product appears in ${orderCount} past order(s) and can't be permanently deleted. Archive it instead to hide it from the store.`
+    });
+  }
+
+  db.prepare('DELETE FROM products WHERE id = ?').run(req.params.id);
+  res.json({ deleted: true });
 });
 
 module.exports = router;
