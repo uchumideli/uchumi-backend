@@ -10,25 +10,43 @@ function generateOrderCode() {
   return `UCH${n}`;
 }
 
-const DELIVERY_FEES = {
-  'Nairobi CBD': 150,
-  'Westlands / Parklands': 200,
-  'Kilimani / Kileleshwa': 200,
-  'Karen / Langata': 300,
-  'Outside Nairobi': 500,
-};
+const KES_PER_KM = 50;
+
+// Straight-line ("as the crow flies") distance between two GPS points, in km.
+// Not actual driving distance — that would require a paid mapping API.
+function haversineKm(lat1, lng1, lat2, lng2) {
+  const R = 6371; // Earth's radius in km
+  const toRad = (deg) => deg * Math.PI / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a = Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
 
 // POST /api/orders — create a new order from the cart
-// Body: { items: [{product_id, qty}], delivery_zone, delivery_address, phone, customer_name }
+// Body: { items: [{product_id, qty}], branch_id, customer_lat, customer_lng, delivery_address, phone, customer_name }
 router.post('/', async (req, res) => {
   try {
-    const { items, delivery_zone, delivery_address, phone, customer_name } = req.body;
+    const { items, branch_id, customer_lat, customer_lng, delivery_address, phone, customer_name } = req.body;
 
     if (!items || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'Order must include at least one item' });
     }
     if (!phone) {
       return res.status(400).json({ error: 'Phone number is required' });
+    }
+    if (!branch_id) {
+      return res.status(400).json({ error: 'A branch must be selected' });
+    }
+    if (customer_lat == null || customer_lng == null) {
+      return res.status(400).json({ error: 'Customer location (GPS) is required to calculate delivery' });
+    }
+
+    const branch = await db.get('SELECT * FROM branches WHERE id = ?', [branch_id]);
+    if (!branch) {
+      return res.status(400).json({ error: 'Selected branch not found' });
     }
 
     const orderItems = [];
@@ -51,7 +69,8 @@ router.post('/', async (req, res) => {
       orderItems.push({ product, qty: item.qty, unit_price: product.price });
     }
 
-    const deliveryFee = DELIVERY_FEES[delivery_zone] ?? 150;
+    const distanceKm = haversineKm(branch.latitude, branch.longitude, customer_lat, customer_lng);
+    const deliveryFee = Math.max(0, Math.round(distanceKm * KES_PER_KM));
     const total = subtotal + deliveryFee;
     const orderCode = generateOrderCode();
 
@@ -67,9 +86,9 @@ router.post('/', async (req, res) => {
       }
 
       const orderResult = await tx.run(`
-        INSERT INTO orders (order_code, customer_id, delivery_zone, delivery_fee, delivery_address, phone, subtotal, vat_total, total, status, payment_status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'unpaid')
-      `, [orderCode, customerId, delivery_zone || null, deliveryFee, delivery_address || null, phone, subtotal, vatTotal, total]);
+        INSERT INTO orders (order_code, customer_id, branch_id, customer_lat, customer_lng, distance_km, delivery_fee, delivery_address, phone, subtotal, vat_total, total, status, payment_status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'unpaid')
+      `, [orderCode, customerId, branch_id, customer_lat, customer_lng, distanceKm, deliveryFee, delivery_address || null, phone, subtotal, vatTotal, total]);
 
       const newOrderId = orderResult.lastInsertRowid;
 
@@ -100,6 +119,8 @@ router.post('/', async (req, res) => {
       subtotal,
       vat_total: vatTotal,
       delivery_fee: deliveryFee,
+      distance_km: Math.round(distanceKm * 10) / 10,
+      branch_name: branch.name,
       total,
       payment_status: 'unpaid',
       message: 'Order created. Payment step will be wired up once M-Pesa integration is added.',
@@ -114,13 +135,17 @@ router.post('/', async (req, res) => {
 router.get('/', requireAuth, async (req, res) => {
   try {
     const { status } = req.query;
-    let sql = 'SELECT * FROM orders';
+    let sql = `
+      SELECT o.*, b.name AS branch_name
+      FROM orders o
+      LEFT JOIN branches b ON b.id = o.branch_id
+    `;
     const params = [];
     if (status) {
-      sql += ' WHERE status = ?';
+      sql += ' WHERE o.status = ?';
       params.push(status);
     }
-    sql += ' ORDER BY created_at DESC';
+    sql += ' ORDER BY o.created_at DESC';
     const rows = await db.all(sql, params);
     res.json(rows);
   } catch (e) {
