@@ -125,6 +125,14 @@ async function initSchema() {
       is_active INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )`,
+    `CREATE TABLE IF NOT EXISTS branches (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      address TEXT,
+      latitude REAL NOT NULL,
+      longitude REAL NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
     `CREATE INDEX IF NOT EXISTS idx_products_category ON products(category_id)`,
     `CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)`,
     `CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items(order_id)`,
@@ -143,6 +151,32 @@ async function initSchema() {
   }
   if (!colNames.includes('is_active')) {
     await client.execute('ALTER TABLE admin_users ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1');
+  }
+
+  // branch_id on products: NULL means "available at every branch" (this is
+  // how all existing products behave). A specific branch_id means the
+  // product only shows up when that branch is selected.
+  const productCols = await client.execute("PRAGMA table_info(products)");
+  const productColNames = productCols.rows.map(c => c.name);
+  if (!productColNames.includes('branch_id')) {
+    await client.execute('ALTER TABLE products ADD COLUMN branch_id INTEGER REFERENCES branches(id)');
+  }
+
+  // Delivery-related columns on orders: which branch fulfilled it, the
+  // customer's coordinates at checkout, and the distance used to price it.
+  const orderCols = await client.execute("PRAGMA table_info(orders)");
+  const orderColNames = orderCols.rows.map(c => c.name);
+  if (!orderColNames.includes('branch_id')) {
+    await client.execute('ALTER TABLE orders ADD COLUMN branch_id INTEGER REFERENCES branches(id)');
+  }
+  if (!orderColNames.includes('customer_lat')) {
+    await client.execute('ALTER TABLE orders ADD COLUMN customer_lat REAL');
+  }
+  if (!orderColNames.includes('customer_lng')) {
+    await client.execute('ALTER TABLE orders ADD COLUMN customer_lng REAL');
+  }
+  if (!orderColNames.includes('distance_km')) {
+    await client.execute('ALTER TABLE orders ADD COLUMN distance_km REAL');
   }
 }
 
