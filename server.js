@@ -6,12 +6,13 @@ const express = require('express');
 const cors = require('cors');
 
 const db = require('./db/db');
-const { seedProducts, ensureDefaultAdmin } = require('./db/seed');
+const { seedProducts, seedBranches, ensureDefaultAdmin } = require('./db/seed');
 
 const authRouter = require('./routes/auth');
 const productsRouter = require('./routes/products');
 const ordersRouter = require('./routes/orders');
 const adminRouter = require('./routes/admin');
+const branchesRouter = require('./routes/branches');
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -27,6 +28,7 @@ app.use('/api/auth', authRouter);
 app.use('/api/products', productsRouter);
 app.use('/api/orders', ordersRouter);
 app.use('/api/admin', adminRouter);
+app.use('/api/branches', branchesRouter);
 
 // --- M-Pesa routes go here once credentials are confirmed reusable ---
 // app.use('/api/mpesa', require('./routes/mpesa'));
@@ -46,6 +48,15 @@ async function start() {
   if (productCountRow.n === 0) {
     console.log('Database is empty — running initial product seed...');
     await seedProducts();
+  }
+
+  // Safe to call every boot — only inserts branches that don't already exist
+  // (ON CONFLICT DO UPDATE on name), so admin edits to branch GPS/address
+  // made via the dashboard are never overwritten by this.
+  const branchCountRow = await db.get('SELECT COUNT(*) AS n FROM branches');
+  if (branchCountRow.n === 0) {
+    console.log('No branches found — seeding default branches...');
+    await seedBranches();
   }
 
   // Safe to call every boot — only creates an admin account if none exists yet.
