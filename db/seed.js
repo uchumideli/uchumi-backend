@@ -36,6 +36,24 @@ const PRODUCTS = [
   { name: 'McVities Original Digestive', code: '205939218', unit: '250g', price: 305, category: 'Snacks', vat_rate: 16, stock_qty: 65, description: 'Classic wheat digestive biscuits, a source of fibre, perfect with tea or on their own.' },
 ];
 
+const BRANCHES = [
+  { name: 'Langata Branch (HQ)', address: 'Off Langata Road, Nairobi', latitude: -1.366111, longitude: 36.738056 },
+  { name: 'Unicity Branch', address: 'Unicity Mall, Thika Road, Nairobi', latitude: -1.176823, longitude: 36.940418 },
+  { name: 'Kitengela Branch', address: 'Yukos, Kitengela', latitude: -1.517, longitude: 36.850 },
+];
+
+async function seedBranches() {
+  for (const b of BRANCHES) {
+    await db.run(`
+      INSERT INTO branches (name, address, latitude, longitude)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(name) DO UPDATE SET
+        address=excluded.address, latitude=excluded.latitude, longitude=excluded.longitude
+    `, [b.name, b.address, b.latitude, b.longitude]);
+  }
+  console.log(`Seeded ${BRANCHES.length} branches.`);
+}
+
 async function seedProducts() {
   for (const name of CATEGORIES) {
     await db.run('INSERT OR IGNORE INTO categories (name) VALUES (?)', [name]);
@@ -73,6 +91,7 @@ async function ensureDefaultAdmin() {
 
 async function runSeed() {
   await db.initSchema();
+  await seedBranches();
   await seedProducts();
   await ensureDefaultAdmin();
 }
@@ -82,4 +101,4 @@ if (require.main === module) {
   runSeed().then(() => process.exit(0)).catch(e => { console.error(e); process.exit(1); });
 }
 
-module.exports = { runSeed, seedProducts, ensureDefaultAdmin };
+module.exports = { runSeed, seedProducts, seedBranches, ensureDefaultAdmin };
