@@ -24,15 +24,18 @@ function isRequestingAdmin(req) {
 }
 
 // GET /api/products — list active products (or all, for an admin who asks for it)
+// ?branch_id= filters to products available at that branch OR available
+// everywhere (branch_id IS NULL on the product) — see db/db.js comment.
 router.get('/', async (req, res) => {
   try {
-    const { category, q, include_inactive } = req.query;
+    const { category, q, include_inactive, branch_id } = req.query;
     const showInactiveToo = include_inactive === '1' && isRequestingAdmin(req);
 
     let sql = `
-      SELECT p.*, c.name AS category_name
+      SELECT p.*, c.name AS category_name, b.name AS branch_name
       FROM products p
       LEFT JOIN categories c ON c.id = p.category_id
+      LEFT JOIN branches b ON b.id = p.branch_id
     `;
     const conditions = [];
     const params = [];
@@ -40,6 +43,7 @@ router.get('/', async (req, res) => {
     if (!showInactiveToo) conditions.push('p.is_active = 1');
     if (category) { conditions.push('c.name = ?'); params.push(category); }
     if (q) { conditions.push('(p.name LIKE ? OR p.code LIKE ?)'); params.push(`%${q}%`, `%${q}%`); }
+    if (branch_id) { conditions.push('(p.branch_id IS NULL OR p.branch_id = ?)'); params.push(branch_id); }
 
     if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ');
     sql += ' ORDER BY p.name ASC';
@@ -84,14 +88,14 @@ router.get('/meta/categories', async (req, res) => {
 // POST /api/products — create a new product (staff only)
 router.post('/', requireAuth, requireRole('admin'), async (req, res) => {
   try {
-    const { name, code, unit, price, original_price, category_id, vat_rate, description, stock_qty, image_url } = req.body;
+    const { name, code, unit, price, original_price, category_id, vat_rate, description, stock_qty, image_url, branch_id } = req.body;
     if (!name || price == null) {
       return res.status(400).json({ error: 'name and price are required' });
     }
     const result = await db.run(`
-      INSERT INTO products (name, code, unit, price, original_price, category_id, vat_rate, description, stock_qty, image_url)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [name, code || null, unit || null, price, original_price || null, category_id || null, vat_rate || 0, description || null, stock_qty || 0, image_url || null]);
+      INSERT INTO products (name, code, unit, price, original_price, category_id, vat_rate, description, stock_qty, image_url, branch_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [name, code || null, unit || null, price, original_price || null, category_id || null, vat_rate || 0, description || null, stock_qty || 0, image_url || null, branch_id || null]);
 
     res.status(201).json({ id: result.lastInsertRowid });
   } catch (e) {
@@ -106,7 +110,7 @@ router.put('/:id', requireAuth, requireRole('admin'), async (req, res) => {
     const existing = await db.get('SELECT * FROM products WHERE id = ?', [req.params.id]);
     if (!existing) return res.status(404).json({ error: 'Product not found' });
 
-    const fields = ['name', 'code', 'unit', 'price', 'original_price', 'category_id', 'vat_rate', 'description', 'stock_qty', 'is_active', 'image_url'];
+    const fields = ['name', 'code', 'unit', 'price', 'original_price', 'category_id', 'vat_rate', 'description', 'stock_qty', 'is_active', 'image_url', 'branch_id'];
     const updates = {};
     for (const f of fields) {
       if (req.body[f] !== undefined) updates[f] = req.body[f];
@@ -114,9 +118,9 @@ router.put('/:id', requireAuth, requireRole('admin'), async (req, res) => {
     const merged = { ...existing, ...updates };
 
     await db.run(`
-      UPDATE products SET name=?, code=?, unit=?, price=?, original_price=?, category_id=?, vat_rate=?, description=?, stock_qty=?, is_active=?, image_url=?
+      UPDATE products SET name=?, code=?, unit=?, price=?, original_price=?, category_id=?, vat_rate=?, description=?, stock_qty=?, is_active=?, image_url=?, branch_id=?
       WHERE id=?
-    `, [merged.name, merged.code, merged.unit, merged.price, merged.original_price, merged.category_id, merged.vat_rate, merged.description, merged.stock_qty, merged.is_active, merged.image_url, req.params.id]);
+    `, [merged.name, merged.code, merged.unit, merged.price, merged.original_price, merged.category_id, merged.vat_rate, merged.description, merged.stock_qty, merged.is_active, merged.image_url, merged.branch_id, req.params.id]);
 
     res.json({ updated: true });
   } catch (e) {
