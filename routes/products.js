@@ -153,4 +153,80 @@ router.delete('/:id', requireAuth, requireRole('admin'), async (req, res) => {
   }
 });
 
+// POST /api/products/bulk-import — create/update many products at once (admin only)
+// Body: { products: [{ name, code, unit, price, vat_rate, stock_qty, is_active, category }] }
+// Each product's `category` is a plain category NAME (not an id) — any
+// category name not already in the database is created automatically.
+// Matching is done by `code`: an existing product with the same code gets
+// updated; a new code creates a new product. This is how re-running an
+// import (e.g. an updated price list) stays safe to repeat.
+router.post('/bulk-import', requireAuth, requireRole('admin'), async (req, res) => {
+  try {
+    const { products } = req.body;
+    if (!Array.isArray(products) || products.length === 0) {
+      return res.status(400).json({ error: 'products must be a non-empty array' });
+    }
+
+    let created = 0;
+    let updated = 0;
+    const errors = [];
+
+    // Cache category name -> id lookups/creations across the whole batch,
+    // since many rows usually share the same category.
+    const categoryCache = {};
+    async function getOrCreateCategoryId(name) {
+      if (!name) return null;
+      const trimmed = name.trim();
+      if (!trimmed) return null;
+      const key = trimmed.toLowerCase();
+      if (categoryCache[key]) return categoryCache[key];
+
+      // Case-insensitive match against existing categories first, so
+      // "Fresh Produce" and "Fresh produce" don't become two categories.
+      const existingCat = await db.get('SELECT id, name FROM categories WHERE LOWER(name) = ?', [key]);
+      if (existingCat) {
+        categoryCache[key] = existingCat.id;
+        return existingCat.id;
+      }
+
+      await db.run('INSERT INTO categories (name) VALUES (?)', [trimmed]);
+      const cat = await db.get('SELECT id FROM categories WHERE name = ?', [trimmed]);
+      categoryCache[key] = cat.id;
+      return cat.id;
+    }
+
+    for (const p of products) {
+      try {
+        if (!p.name || p.price == null) {
+          errors.push(`Skipped "${p.name || '(no name)'}" — missing name or price`);
+          continue;
+        }
+        const categoryId = await getOrCreateCategoryId(p.category);
+        const existing = p.code ? await db.get('SELECT id FROM products WHERE code = ?', [p.code]) : null;
+
+        if (existing) {
+          await db.run(`
+            UPDATE products SET name=?, unit=?, price=?, category_id=?, vat_rate=?, stock_qty=?, is_active=?
+            WHERE id=?
+          `, [p.name, p.unit || null, p.price, categoryId, p.vat_rate || 0, p.stock_qty || 0, p.is_active !== false ? 1 : 0, existing.id]);
+          updated++;
+        } else {
+          await db.run(`
+            INSERT INTO products (name, code, unit, price, category_id, vat_rate, stock_qty, is_active)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          `, [p.name, p.code || null, p.unit || null, p.price, categoryId, p.vat_rate || 0, p.stock_qty || 0, p.is_active !== false ? 1 : 0]);
+          created++;
+        }
+      } catch (rowError) {
+        errors.push(`Failed on "${p.name}": ${rowError.message}`);
+      }
+    }
+
+    res.json({ created, updated, errors, total: products.length });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Bulk import failed' });
+  }
+});
+
 module.exports = router;
