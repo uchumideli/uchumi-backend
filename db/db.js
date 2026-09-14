@@ -133,6 +133,15 @@ async function initSchema() {
       longitude REAL NOT NULL,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )`,
+    `CREATE TABLE IF NOT EXISTS promo_banners (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      image_url TEXT NOT NULL,
+      title TEXT,
+      link_url TEXT,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
     `CREATE INDEX IF NOT EXISTS idx_products_category ON products(category_id)`,
     `CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)`,
     `CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items(order_id)`,
