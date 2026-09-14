@@ -54,6 +54,34 @@ async function seedBranches() {
   console.log(`Seeded ${BRANCHES.length} branches.`);
 }
 
+// These are the 3 images that were hardcoded into the storefront's top
+// carousel from the very start of the project. They're now hosted as real
+// files alongside the storefront on Netlify — this brings them into the
+// database so they show up (and are editable) in the admin dashboard too,
+// instead of living invisibly inside the front-end code.
+//
+// IMPORTANT: if the storefront's Netlify site is ever recreated under a
+// different URL, or the image files get renumbered by re-extracting them,
+// these URLs will need updating via the dashboard's "Edit photo" button.
+const HERO_BANNERS = [
+  { title: 'Delivery — 90 min delivery on all orders', image_url: 'https://dazzling-strudel-d76d0f.netlify.app/images/img020.png', sort_order: 1 },
+  { title: 'Household Essentials', image_url: 'https://dazzling-strudel-d76d0f.netlify.app/images/img021.jpg', sort_order: 2 },
+  { title: 'Home of value — flat delivery', image_url: 'https://dazzling-strudel-d76d0f.netlify.app/images/img022.png', sort_order: 3 },
+];
+
+async function seedHeroBanners() {
+  const existing = await db.get(`SELECT id FROM promo_banners WHERE placement = 'hero' LIMIT 1`);
+  if (existing) return; // don't recreate/duplicate if hero banners already exist (e.g. admin already edited them)
+
+  for (const b of HERO_BANNERS) {
+    await db.run(
+      `INSERT INTO promo_banners (image_url, title, sort_order, placement) VALUES (?, ?, ?, 'hero')`,
+      [b.image_url, b.title, b.sort_order]
+    );
+  }
+  console.log(`Seeded ${HERO_BANNERS.length} hero (top carousel) banners.`);
+}
+
 async function seedProducts() {
   for (const name of CATEGORIES) {
     await db.run('INSERT OR IGNORE INTO categories (name) VALUES (?)', [name]);
@@ -92,6 +120,7 @@ async function ensureDefaultAdmin() {
 async function runSeed() {
   await db.initSchema();
   await seedBranches();
+  await seedHeroBanners();
   await seedProducts();
   await ensureDefaultAdmin();
 }
@@ -101,4 +130,4 @@ if (require.main === module) {
   runSeed().then(() => process.exit(0)).catch(e => { console.error(e); process.exit(1); });
 }
 
-module.exports = { runSeed, seedProducts, seedBranches, ensureDefaultAdmin };
+module.exports = { runSeed, seedProducts, seedBranches, seedHeroBanners, ensureDefaultAdmin };
