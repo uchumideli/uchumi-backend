@@ -161,6 +161,14 @@ async function initSchema() {
   if (!productColNames.includes('branch_id')) {
     await client.execute('ALTER TABLE products ADD COLUMN branch_id INTEGER REFERENCES branches(id)');
   }
+  // is_draft: set on newly bulk-imported products so they land in a staging
+  // area instead of appearing on the storefront right away. An admin reviews
+  // each one (adds a photo, confirms quantity/branch) then publishes it,
+  // which clears this flag and sets is_active. Existing/manually-added
+  // products default to 0 (never drafts) so nothing already live is affected.
+  if (!productColNames.includes('is_draft')) {
+    await client.execute('ALTER TABLE products ADD COLUMN is_draft INTEGER NOT NULL DEFAULT 0');
+  }
 
   // Delivery-related columns on orders: which branch fulfilled it, the
   // customer's coordinates at checkout, and the distance used to price it.
