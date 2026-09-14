@@ -140,6 +140,7 @@ async function initSchema() {
       link_url TEXT,
       sort_order INTEGER NOT NULL DEFAULT 0,
       is_active INTEGER NOT NULL DEFAULT 1,
+      placement TEXT NOT NULL DEFAULT 'grid',
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )`,
     `CREATE INDEX IF NOT EXISTS idx_products_category ON products(category_id)`,
@@ -194,6 +195,15 @@ async function initSchema() {
   }
   if (!orderColNames.includes('distance_km')) {
     await client.execute('ALTER TABLE orders ADD COLUMN distance_km REAL');
+  }
+
+  // placement on promo_banners: existing banners created before this column
+  // existed default to 'grid' (their original behavior — ad slots inside the
+  // product listing). New 'hero' banners appear in the top carousel instead.
+  const bannerCols = await client.execute("PRAGMA table_info(promo_banners)");
+  const bannerColNames = bannerCols.rows.map(c => c.name);
+  if (!bannerColNames.includes('placement')) {
+    await client.execute("ALTER TABLE promo_banners ADD COLUMN placement TEXT NOT NULL DEFAULT 'grid'");
   }
 }
 
