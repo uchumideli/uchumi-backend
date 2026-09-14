@@ -41,6 +41,7 @@ router.get('/', async (req, res) => {
     const params = [];
 
     if (!showInactiveToo) conditions.push('p.is_active = 1');
+    conditions.push('p.is_draft = 0'); // drafts only ever show via GET /api/products/drafts
     if (category) { conditions.push('c.name = ?'); params.push(category); }
     if (q) { conditions.push('(p.name LIKE ? OR p.code LIKE ?)'); params.push(`%${q}%`, `%${q}%`); }
     if (branch_id) { conditions.push('(p.branch_id IS NULL OR p.branch_id = ?)'); params.push(branch_id); }
@@ -53,6 +54,26 @@ router.get('/', async (req, res) => {
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: 'Failed to load products' });
+  }
+});
+
+// GET /api/products/drafts — products awaiting review before they go live
+// (admin only). Must be defined before GET /:id so "drafts" doesn't get
+// mistaken for a product id.
+router.get('/drafts', requireAuth, requireRole('admin'), async (req, res) => {
+  try {
+    const rows = await db.all(`
+      SELECT p.*, c.name AS category_name, b.name AS branch_name
+      FROM products p
+      LEFT JOIN categories c ON c.id = p.category_id
+      LEFT JOIN branches b ON b.id = p.branch_id
+      WHERE p.is_draft = 1
+      ORDER BY p.created_at DESC
+    `);
+    res.json(rows);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Failed to load draft products' });
   }
 });
 
@@ -126,6 +147,33 @@ router.put('/:id', requireAuth, requireRole('admin'), async (req, res) => {
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: 'Failed to update product' });
+  }
+});
+
+// PUT /api/products/:id/publish — the "review, then publish" step: apply any
+// last edits (stock, photo, branch, category) and make the product live on
+// the storefront (admin only).
+router.put('/:id/publish', requireAuth, requireRole('admin'), async (req, res) => {
+  try {
+    const existing = await db.get('SELECT * FROM products WHERE id = ?', [req.params.id]);
+    if (!existing) return res.status(404).json({ error: 'Product not found' });
+
+    const fields = ['stock_qty', 'image_url', 'branch_id', 'category_id', 'price', 'code', 'unit'];
+    const updates = {};
+    for (const f of fields) {
+      if (req.body[f] !== undefined) updates[f] = req.body[f];
+    }
+    const merged = { ...existing, ...updates };
+
+    await db.run(`
+      UPDATE products SET stock_qty=?, image_url=?, branch_id=?, category_id=?, price=?, code=?, unit=?, is_draft=0, is_active=1
+      WHERE id=?
+    `, [merged.stock_qty, merged.image_url, merged.branch_id, merged.category_id, merged.price, merged.code, merged.unit, req.params.id]);
+
+    res.json({ published: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Failed to publish product' });
   }
 });
 
@@ -211,10 +259,14 @@ router.post('/bulk-import', requireAuth, requireRole('admin'), async (req, res) 
           `, [p.name, p.unit || null, p.price, categoryId, p.vat_rate || 0, p.stock_qty || 0, p.is_active !== false ? 1 : 0, existing.id]);
           updated++;
         } else {
+          // New products always land as a hidden draft, regardless of the
+          // source file's "active" flag — an admin reviews and publishes
+          // each one (adding a photo, confirming branch/quantity) before it
+          // ever appears on the storefront.
           await db.run(`
-            INSERT INTO products (name, code, unit, price, category_id, vat_rate, stock_qty, is_active)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-          `, [p.name, p.code || null, p.unit || null, p.price, categoryId, p.vat_rate || 0, p.stock_qty || 0, p.is_active !== false ? 1 : 0]);
+            INSERT INTO products (name, code, unit, price, category_id, vat_rate, stock_qty, is_active, is_draft)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1)
+          `, [p.name, p.code || null, p.unit || null, p.price, categoryId, p.vat_rate || 0, p.stock_qty || 0]);
           created++;
         }
       } catch (rowError) {
