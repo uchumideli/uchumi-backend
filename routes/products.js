@@ -201,6 +201,55 @@ router.delete('/:id', requireAuth, requireRole('admin'), async (req, res) => {
   }
 });
 
+// POST /api/products/bulk-archive — hide many products at once (admin only).
+// Body: { ids: [1,2,3] }. Safe for anything, including products with order history.
+router.post('/bulk-archive', requireAuth, requireRole('admin'), async (req, res) => {
+  try {
+    const { ids } = req.body;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ error: 'ids must be a non-empty array' });
+    }
+    let archived = 0;
+    for (const id of ids) {
+      const result = await db.run('UPDATE products SET is_active = 0 WHERE id = ?', [id]);
+      if (result.changes > 0) archived++;
+    }
+    res.json({ archived });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Bulk archive failed' });
+  }
+});
+
+// POST /api/products/bulk-delete — permanently remove many products at once
+// (admin only). Same safety rule as single delete: skips (and reports) any
+// product that appears in past order history instead of deleting it.
+router.post('/bulk-delete', requireAuth, requireRole('admin'), async (req, res) => {
+  try {
+    const { ids } = req.body;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ error: 'ids must be a non-empty array' });
+    }
+    let deleted = 0;
+    const skipped = [];
+    for (const id of ids) {
+      const product = await db.get('SELECT name FROM products WHERE id = ?', [id]);
+      if (!product) continue;
+      const orderCountRow = await db.get('SELECT COUNT(*) AS n FROM order_items WHERE product_id = ?', [id]);
+      if (orderCountRow.n > 0) {
+        skipped.push(product.name);
+        continue;
+      }
+      await db.run('DELETE FROM products WHERE id = ?', [id]);
+      deleted++;
+    }
+    res.json({ deleted, skipped });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Bulk delete failed' });
+  }
+});
+
 // POST /api/products/bulk-import — create/update many products at once (admin only)
 // Body: { products: [{ name, code, unit, price, vat_rate, stock_qty, is_active, category }] }
 // Each product's `category` is a plain category NAME (not an id) — any
