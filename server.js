@@ -6,7 +6,7 @@ const express = require('express');
 const cors = require('cors');
 
 const db = require('./db/db');
-const { seedProducts, seedBranches, ensureDefaultAdmin } = require('./db/seed');
+const { seedProducts, seedBranches, seedHeroBanners, ensureDefaultAdmin } = require('./db/seed');
 
 const authRouter = require('./routes/auth');
 const productsRouter = require('./routes/products');
@@ -60,6 +60,10 @@ async function start() {
     console.log('No branches found — seeding default branches...');
     await seedBranches();
   }
+
+  // Safe to call every boot — the function itself checks whether any hero
+  // banners already exist, so this never overwrites admin edits.
+  await seedHeroBanners();
 
   // Safe to call every boot — only creates an admin account if none exists yet.
   await ensureDefaultAdmin();
