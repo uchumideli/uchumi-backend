@@ -88,8 +88,12 @@ async function initSchema() {
     `CREATE TABLE IF NOT EXISTS customers (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT,
+      first_name TEXT,
+      last_name TEXT,
       phone TEXT UNIQUE,
       email TEXT,
+      date_of_birth TEXT,
+      password_hash TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )`,
     `CREATE TABLE IF NOT EXISTS orders (
@@ -205,6 +209,22 @@ async function initSchema() {
   if (!bannerColNames.includes('placement')) {
     await client.execute("ALTER TABLE promo_banners ADD COLUMN placement TEXT NOT NULL DEFAULT 'grid'");
   }
+
+  // Customer accounts: registration fields added on top of the original
+  // lightweight "captured at checkout" customer record. Existing customer
+  // rows (from guest checkouts before this feature existed) simply have
+  // these as NULL — they're not registered accounts, just delivery contacts.
+  const customerCols = await client.execute("PRAGMA table_info(customers)");
+  const customerColNames = customerCols.rows.map(c => c.name);
+  for (const col of ['first_name', 'last_name', 'date_of_birth', 'password_hash']) {
+    if (!customerColNames.includes(col)) {
+      await client.execute(`ALTER TABLE customers ADD COLUMN ${col} TEXT`);
+    }
+  }
+  // Unique index on email so two accounts can't register with the same
+  // address — safe to add even with existing data, since old guest-checkout
+  // rows all have a NULL email (SQLite allows multiple NULLs in a unique index).
+  await client.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_email ON customers(email)');
 }
 
 module.exports = { client, get, all, run, transaction, initSchema };
