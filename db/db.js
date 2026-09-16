@@ -234,6 +234,21 @@ async function initSchema() {
   if (!customerColNames.includes('reset_token_expires')) {
     await client.execute('ALTER TABLE customers ADD COLUMN reset_token_expires TEXT');
   }
+
+  // Staff/admin profile fields: phone, national ID, first/last name, email.
+  // Existing accounts (like the default admin created from env vars) simply
+  // have these as NULL until someone fills them in via the dashboard —
+  // nothing about logging in with username/password changes.
+  const staffCols = await client.execute("PRAGMA table_info(admin_users)");
+  const staffColNames = staffCols.rows.map(c => c.name);
+  for (const col of ['first_name', 'last_name', 'phone', 'national_id', 'email', 'reset_token', 'reset_token_expires']) {
+    if (!staffColNames.includes(col)) {
+      await client.execute(`ALTER TABLE admin_users ADD COLUMN ${col} TEXT`);
+    }
+  }
+  // Unique index on email, same reasoning as customers — old accounts
+  // without an email are all NULL, which SQLite allows multiple of.
+  await client.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_admin_users_email ON admin_users(email)');
 }
 
 module.exports = { client, get, all, run, transaction, initSchema };
