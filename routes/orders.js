@@ -2,6 +2,7 @@
 const express = require('express');
 const db = require('../db/db');
 const { requireAuth, requireRole } = require('../middleware/auth');
+const { attachCustomerIfPresent, requireCustomerAuth } = require('./customer-auth');
 
 const router = express.Router();
 
@@ -27,7 +28,7 @@ function haversineKm(lat1, lng1, lat2, lng2) {
 
 // POST /api/orders — create a new order from the cart
 // Body: { items: [{product_id, qty}], branch_id, customer_lat, customer_lng, delivery_address, phone, customer_name }
-router.post('/', async (req, res) => {
+router.post('/', attachCustomerIfPresent, async (req, res) => {
   try {
     const { items, branch_id, customer_lat, customer_lng, delivery_address, phone, customer_name } = req.body;
 
@@ -76,7 +77,10 @@ router.post('/', async (req, res) => {
 
     const orderId = await db.transaction(async (tx) => {
       let customerId = null;
-      if (phone) {
+      if (req.customer) {
+        // Logged-in customer — link the order to their real account directly.
+        customerId = req.customer.id;
+      } else if (phone) {
         await tx.run(`
           INSERT INTO customers (name, phone) VALUES (?, ?)
           ON CONFLICT(phone) DO UPDATE SET name = excluded.name
@@ -151,6 +155,24 @@ router.get('/', requireAuth, async (req, res) => {
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: 'Failed to load orders' });
+  }
+});
+
+// GET /api/orders/mine — a logged-in customer's own order history.
+// Must be defined before GET /:id so "mine" doesn't get mistaken for an order id.
+router.get('/mine', attachCustomerIfPresent, requireCustomerAuth, async (req, res) => {
+  try {
+    const rows = await db.all(`
+      SELECT o.*, b.name AS branch_name
+      FROM orders o
+      LEFT JOIN branches b ON b.id = o.branch_id
+      WHERE o.customer_id = ?
+      ORDER BY o.created_at DESC
+    `, [req.customer.id]);
+    res.json(rows);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Failed to load your orders' });
   }
 });
 
