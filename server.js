@@ -14,6 +14,7 @@ const ordersRouter = require('./routes/orders');
 const adminRouter = require('./routes/admin');
 const branchesRouter = require('./routes/branches');
 const promoBannersRouter = require('./routes/promo-banners');
+const { router: customerAuthRouter, attachCustomerIfPresent } = require('./routes/customer-auth');
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -31,6 +32,7 @@ app.use('/api/orders', ordersRouter);
 app.use('/api/admin', adminRouter);
 app.use('/api/branches', branchesRouter);
 app.use('/api/promo-banners', promoBannersRouter);
+app.use('/api/customer-auth', customerAuthRouter);
 
 // --- M-Pesa routes go here once credentials are confirmed reusable ---
 // app.use('/api/mpesa', require('./routes/mpesa'));
