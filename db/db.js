@@ -225,6 +225,15 @@ async function initSchema() {
   // address — safe to add even with existing data, since old guest-checkout
   // rows all have a NULL email (SQLite allows multiple NULLs in a unique index).
   await client.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_email ON customers(email)');
+
+  // Forgot-password: a one-time token emailed to the customer, with an
+  // expiry so an old, unused reset link can't be used indefinitely.
+  if (!customerColNames.includes('reset_token')) {
+    await client.execute('ALTER TABLE customers ADD COLUMN reset_token TEXT');
+  }
+  if (!customerColNames.includes('reset_token_expires')) {
+    await client.execute('ALTER TABLE customers ADD COLUMN reset_token_expires TEXT');
+  }
 }
 
 module.exports = { client, get, all, run, transaction, initSchema };
