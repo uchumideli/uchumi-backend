@@ -22,8 +22,8 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ error: 'Incorrect username or password' });
     }
 
-    const token = jwt.sign({ sub: user.id, username: user.username, role: user.role }, JWT_SECRET, { expiresIn: '12h' });
-    res.json({ token, username: user.username, role: user.role });
+    const token = jwt.sign({ sub: user.id, username: user.username, role: user.role, branch_id: user.branch_id }, JWT_SECRET, { expiresIn: '12h' });
+    res.json({ token, username: user.username, role: user.role, branch_id: user.branch_id });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: 'Login failed' });
@@ -32,7 +32,7 @@ router.post('/login', async (req, res) => {
 
 // GET /api/auth/me — used by the dashboard to confirm a stored token is still valid
 router.get('/me', requireAuth, (req, res) => {
-  res.json({ username: req.user.username, role: req.user.role });
+  res.json({ username: req.user.username, role: req.user.role, branch_id: req.user.branch_id });
 });
 
 // POST /api/auth/change-password — logged-in user changes their own password
@@ -122,13 +122,22 @@ router.post('/reset-password', async (req, res) => {
 
 // ---- Staff account management (admin role only) ----
 
-// GET /api/auth/users — list all staff accounts
-router.get('/users', requireAuth, requireRole('admin'), async (req, res) => {
+// GET /api/auth/users — list staff accounts. A super-admin (branch_id NULL)
+// sees everyone; a branch_admin only sees staff belonging to their own branch.
+router.get('/users', requireAuth, requireRole('admin', 'branch_admin'), async (req, res) => {
   try {
-    const rows = await db.all(`
-      SELECT id, username, role, is_active, created_at, first_name, last_name, phone, national_id, email
-      FROM admin_users ORDER BY created_at ASC
-    `);
+    let sql = `
+      SELECT u.id, u.username, u.role, u.is_active, u.created_at, u.first_name, u.last_name, u.phone, u.national_id, u.email, u.branch_id, b.name AS branch_name
+      FROM admin_users u
+      LEFT JOIN branches b ON b.id = u.branch_id
+    `;
+    const params = [];
+    if (req.user.role === 'branch_admin') {
+      sql += ' WHERE u.branch_id = ?';
+      params.push(req.user.branch_id);
+    }
+    sql += ' ORDER BY u.created_at ASC';
+    const rows = await db.all(sql, params);
     res.json(rows);
   } catch (e) {
     console.error(e);
@@ -136,14 +145,29 @@ router.get('/users', requireAuth, requireRole('admin'), async (req, res) => {
   }
 });
 
-// POST /api/auth/users — create a new staff account
-router.post('/users', requireAuth, requireRole('admin'), async (req, res) => {
+// POST /api/auth/users — create a new staff account.
+// A branch_admin can only create plain 'staff' accounts, and only for their
+// own branch — they can't create other admins/branch_admins or assign a
+// different branch, no matter what the request body says.
+router.post('/users', requireAuth, requireRole('admin', 'branch_admin'), async (req, res) => {
   try {
-    const { username, password, role, first_name, last_name, phone, national_id, email } = req.body;
+    const { username, password, role, first_name, last_name, phone, national_id, email, branch_id } = req.body;
     if (!username || !password || password.length < 8) {
       return res.status(400).json({ error: 'Username and a password of at least 8 characters are required' });
     }
-    const finalRole = role === 'admin' ? 'admin' : 'staff';
+
+    let finalRole, finalBranchId;
+    if (req.user.role === 'branch_admin') {
+      finalRole = 'staff';
+      finalBranchId = req.user.branch_id;
+    } else {
+      finalRole = ['admin', 'branch_admin', 'staff'].includes(role) ? role : 'staff';
+      finalBranchId = finalRole === 'admin' ? null : (branch_id || null);
+      if (finalRole === 'branch_admin' && !finalBranchId) {
+        return res.status(400).json({ error: 'A branch_admin must be assigned to a branch' });
+      }
+    }
+
     const existing = await db.get('SELECT id FROM admin_users WHERE username = ?', [username]);
     if (existing) {
       return res.status(400).json({ error: 'That username is already taken' });
@@ -156,22 +180,33 @@ router.post('/users', requireAuth, requireRole('admin'), async (req, res) => {
     }
     const hash = bcrypt.hashSync(password, 10);
     const result = await db.run(
-      `INSERT INTO admin_users (username, password_hash, role, first_name, last_name, phone, national_id, email)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [username, hash, finalRole, first_name || null, last_name || null, phone || null, national_id || null, email || null]
+      `INSERT INTO admin_users (username, password_hash, role, first_name, last_name, phone, national_id, email, branch_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [username, hash, finalRole, first_name || null, last_name || null, phone || null, national_id || null, email || null, finalBranchId]
     );
-    res.status(201).json({ id: result.lastInsertRowid, username, role: finalRole });
+    res.status(201).json({ id: result.lastInsertRowid, username, role: finalRole, branch_id: finalBranchId });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: 'Failed to create staff account' });
   }
 });
 
-// PUT /api/auth/users/:id — update a staff account's role, active status, or profile details
-router.put('/users/:id', requireAuth, requireRole('admin'), async (req, res) => {
+// PUT /api/auth/users/:id — update a staff account's role, branch, active
+// status, or profile details. A branch_admin can only touch staff within
+// their own branch, and can't change anyone's role or branch assignment.
+router.put('/users/:id', requireAuth, requireRole('admin', 'branch_admin'), async (req, res) => {
   try {
     const target = await db.get('SELECT * FROM admin_users WHERE id = ?', [req.params.id]);
     if (!target) return res.status(404).json({ error: 'User not found' });
+
+    if (req.user.role === 'branch_admin') {
+      if (target.branch_id !== req.user.branch_id) {
+        return res.status(403).json({ error: 'You can only manage staff in your own branch' });
+      }
+      if (req.body.role !== undefined || req.body.branch_id !== undefined) {
+        return res.status(403).json({ error: "You can't change a staff member's role or branch" });
+      }
+    }
 
     if (target.id === req.user.sub && req.body.is_active === 0) {
       return res.status(400).json({ error: "You can't deactivate your own account" });
@@ -187,8 +222,9 @@ router.put('/users/:id', requireAuth, requireRole('admin'), async (req, res) => 
       }
     }
 
-    const role = req.body.role === 'admin' ? 'admin' : (req.body.role === 'staff' ? 'staff' : target.role);
+    const role = ['admin', 'branch_admin', 'staff'].includes(req.body.role) ? req.body.role : target.role;
     const isActive = req.body.is_active !== undefined ? (req.body.is_active ? 1 : 0) : target.is_active;
+    const branchId = req.body.branch_id !== undefined ? (req.body.branch_id || null) : target.branch_id;
 
     const profileFields = ['first_name', 'last_name', 'phone', 'national_id', 'email'];
     const updates = {};
@@ -198,8 +234,8 @@ router.put('/users/:id', requireAuth, requireRole('admin'), async (req, res) => 
     const merged = { ...target, ...updates };
 
     await db.run(
-      `UPDATE admin_users SET role=?, is_active=?, first_name=?, last_name=?, phone=?, national_id=?, email=? WHERE id=?`,
-      [role, isActive, merged.first_name, merged.last_name, merged.phone, merged.national_id, merged.email, target.id]
+      `UPDATE admin_users SET role=?, is_active=?, branch_id=?, first_name=?, last_name=?, phone=?, national_id=?, email=? WHERE id=?`,
+      [role, isActive, branchId, merged.first_name, merged.last_name, merged.phone, merged.national_id, merged.email, target.id]
     );
     res.json({ updated: true });
   } catch (e) {
