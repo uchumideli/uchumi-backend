@@ -200,6 +200,11 @@ async function initSchema() {
   if (!orderColNames.includes('distance_km')) {
     await client.execute('ALTER TABLE orders ADD COLUMN distance_km REAL');
   }
+  // The 2-hour delivery window the customer picked at checkout (e.g. "10:00–12:00"),
+  // stored as plain text — this is a display/planning field, not used in any calculation.
+  if (!orderColNames.includes('delivery_slot')) {
+    await client.execute('ALTER TABLE orders ADD COLUMN delivery_slot TEXT');
+  }
 
   // placement on promo_banners: existing banners created before this column
   // existed default to 'grid' (their original behavior — ad slots inside the
