@@ -249,6 +249,15 @@ async function initSchema() {
   // Unique index on email, same reasoning as customers — old accounts
   // without an email are all NULL, which SQLite allows multiple of.
   await client.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_admin_users_email ON admin_users(email)');
+
+  // branch_id on staff: NULL means "super-admin — not tied to one branch,
+  // sees and manages everything." A specific branch_id scopes a
+  // 'branch_admin' or 'staff' account to that one branch for the purposes
+  // of who they can manage. It does NOT restrict which orders they can see —
+  // order visibility stays open to any logged-in staff account, by design.
+  if (!staffColNames.includes('branch_id')) {
+    await client.execute('ALTER TABLE admin_users ADD COLUMN branch_id INTEGER REFERENCES branches(id)');
+  }
 }
 
 module.exports = { client, get, all, run, transaction, initSchema };
