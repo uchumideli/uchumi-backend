@@ -214,6 +214,34 @@ router.get('/sales-by-branch', async (req, res) => {
   }
 });
 
+// GET /api/admin/stock-alerts — recent checkouts blocked by insufficient
+// stock, newest first. This is how staff find out a customer wanted
+// something that wasn't available, since that order was never created.
+router.get('/stock-alerts', async (req, res) => {
+  try {
+    const effectiveBranchId = req.user.role === 'branch_admin' ? req.user.branch_id : (req.query.branch_id || null);
+    const limit = Number(req.query.limit) || 50;
+    const conditions = [];
+    const params = [];
+    if (effectiveBranchId) { conditions.push('sa.branch_id = ?'); params.push(effectiveBranchId); }
+
+    let sql = `
+      SELECT sa.*, b.name AS branch_name
+      FROM stock_alerts sa
+      LEFT JOIN branches b ON b.id = sa.branch_id
+    `;
+    if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ');
+    sql += ' ORDER BY sa.created_at DESC LIMIT ?';
+    params.push(limit);
+
+    const rows = await db.all(sql, params);
+    res.json(rows);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Failed to load stock alerts' });
+  }
+});
+
 // GET /api/admin/orders-report — the raw order list behind a report, for
 // a CSV export. Same filters as everything else here.
 router.get('/orders-report', async (req, res) => {
