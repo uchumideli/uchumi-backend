@@ -13,6 +13,32 @@ function generateOrderCode() {
 
 const KES_PER_KM = 50;
 
+// 2-hour delivery windows, 8am to 10pm, matching what the storefront offers.
+const VALID_DELIVERY_SLOTS = [
+  '08:00-10:00', '10:00-12:00', '12:00-14:00', '14:00-16:00',
+  '16:00-18:00', '18:00-20:00', '20:00-22:00',
+];
+
+// Nairobi is a fixed UTC+3 with no daylight saving, so this stays correct
+// year-round without needing a timezone library.
+function nairobiNow() {
+  return new Date(Date.now() + 3 * 60 * 60 * 1000);
+}
+
+// A slot is only valid if it's one of the real options AND its end time
+// hasn't already passed today, in Nairobi time — the same rule the
+// storefront uses to gray out past slots, enforced again here so nobody
+// can bypass that by calling the API directly.
+function isSlotStillAvailable(slot) {
+  if (!VALID_DELIVERY_SLOTS.includes(slot)) return false;
+  const [, endTime] = slot.split('-');
+  const [endHour, endMin] = endTime.split(':').map(Number);
+  const now = nairobiNow();
+  const slotEndMinutes = endHour * 60 + endMin;
+  const nowMinutes = now.getUTCHours() * 60 + now.getUTCMinutes();
+  return nowMinutes <= slotEndMinutes;
+}
+
 // Straight-line ("as the crow flies") distance between two GPS points, in km.
 // Not actual driving distance — that would require a paid mapping API.
 function haversineKm(lat1, lng1, lat2, lng2) {
@@ -27,10 +53,14 @@ function haversineKm(lat1, lng1, lat2, lng2) {
 }
 
 // POST /api/orders — create a new order from the cart
-// Body: { items: [{product_id, qty}], branch_id, customer_lat, customer_lng, delivery_address, phone, customer_name }
+// Body: { items: [{product_id, qty}], branch_id, customer_lat, customer_lng, delivery_address, phone, customer_name, delivery_slot }
 router.post('/', attachCustomerIfPresent, async (req, res) => {
   try {
-    const { items, branch_id, customer_lat, customer_lng, delivery_address, phone, customer_name } = req.body;
+    const { items, branch_id, customer_lat, customer_lng, delivery_address, phone, customer_name, delivery_slot } = req.body;
+
+    if (delivery_slot && !isSlotStillAvailable(delivery_slot)) {
+      return res.status(400).json({ error: 'That delivery time has already passed — please choose another slot.' });
+    }
 
     if (!items || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'Order must include at least one item' });
@@ -60,6 +90,13 @@ router.post('/', attachCustomerIfPresent, async (req, res) => {
         return res.status(400).json({ error: `Product ${item.product_id} not found or unavailable` });
       }
       if (product.stock_qty < item.qty) {
+        // A lost sale is still useful information — log it so staff can see
+        // what customers actually wanted to buy but couldn't.
+        db.run(
+          `INSERT INTO stock_alerts (product_id, product_name, requested_qty, available_qty, branch_id, customer_phone)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [product.id, product.name, item.qty, product.stock_qty, branch_id || null, phone || null]
+        ).catch(e => console.error('Failed to log stock alert:', e));
         return res.status(400).json({ error: `Insufficient stock for ${product.name}` });
       }
       const lineTotal = product.price * item.qty;
@@ -90,9 +127,9 @@ router.post('/', attachCustomerIfPresent, async (req, res) => {
       }
 
       const orderResult = await tx.run(`
-        INSERT INTO orders (order_code, customer_id, branch_id, customer_lat, customer_lng, distance_km, delivery_fee, delivery_address, phone, subtotal, vat_total, total, status, payment_status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'unpaid')
-      `, [orderCode, customerId, branch_id, customer_lat, customer_lng, distanceKm, deliveryFee, delivery_address || null, phone, subtotal, vatTotal, total]);
+        INSERT INTO orders (order_code, customer_id, branch_id, customer_lat, customer_lng, distance_km, delivery_fee, delivery_address, phone, subtotal, vat_total, total, delivery_slot, status, payment_status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'unpaid')
+      `, [orderCode, customerId, branch_id, customer_lat, customer_lng, distanceKm, deliveryFee, delivery_address || null, phone, subtotal, vatTotal, total, delivery_slot || null]);
 
       const newOrderId = orderResult.lastInsertRowid;
 
@@ -125,6 +162,7 @@ router.post('/', attachCustomerIfPresent, async (req, res) => {
       delivery_fee: deliveryFee,
       distance_km: Math.round(distanceKm * 10) / 10,
       branch_name: branch.name,
+      delivery_slot: delivery_slot || null,
       total,
       payment_status: 'unpaid',
       message: 'Order created. Payment step will be wired up once M-Pesa integration is added.',
@@ -179,7 +217,13 @@ router.get('/mine', attachCustomerIfPresent, requireCustomerAuth, async (req, re
 // GET /api/orders/:id — single order with items
 router.get('/:id', async (req, res) => {
   try {
-    const order = await db.get('SELECT * FROM orders WHERE id = ?', [req.params.id]);
+    const order = await db.get(`
+      SELECT o.*, b.name AS branch_name, c.name AS customer_full_name, c.email AS customer_email
+      FROM orders o
+      LEFT JOIN branches b ON b.id = o.branch_id
+      LEFT JOIN customers c ON c.id = o.customer_id
+      WHERE o.id = ?
+    `, [req.params.id]);
     if (!order) return res.status(404).json({ error: 'Order not found' });
 
     const items = await db.all('SELECT * FROM order_items WHERE order_id = ?', [req.params.id]);
