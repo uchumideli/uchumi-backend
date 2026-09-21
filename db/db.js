@@ -154,6 +154,13 @@ async function initSchema() {
       is_active INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )`,
+    // A small generic key/value settings table — starting with the
+    // announcement ticker's animation style, but reusable for other
+    // simple site-wide settings later without needing a new table each time.
+    `CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value TEXT
+    )`,
     `CREATE INDEX IF NOT EXISTS idx_products_category ON products(category_id)`,
     `CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)`,
     `CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items(order_id)`,
