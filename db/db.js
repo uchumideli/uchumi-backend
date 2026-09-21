@@ -147,6 +147,19 @@ async function initSchema() {
       placement TEXT NOT NULL DEFAULT 'grid',
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )`,
+    // Logged whenever a customer's checkout is blocked because they wanted
+    // more of a product than is currently in stock. This turns what would
+    // otherwise be an invisible lost sale into a signal for what to restock.
+    `CREATE TABLE IF NOT EXISTS stock_alerts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_id INTEGER REFERENCES products(id),
+      product_name TEXT NOT NULL,
+      requested_qty INTEGER NOT NULL,
+      available_qty INTEGER NOT NULL,
+      branch_id INTEGER REFERENCES branches(id),
+      customer_phone TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
     `CREATE TABLE IF NOT EXISTS announcements (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       message TEXT NOT NULL,
