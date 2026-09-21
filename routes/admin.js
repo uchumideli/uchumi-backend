@@ -92,6 +92,65 @@ router.get('/low-stock', async (req, res) => {
   }
 });
 
+// GET /api/admin/stock-report — inventory-wide numbers: total value tied up
+// in stock, unit counts, out-of-stock/low-stock counts, a breakdown by
+// category, and the products holding the most capital (price × quantity).
+router.get('/stock-report', async (req, res) => {
+  try {
+    const effectiveBranchId = req.user.role === 'branch_admin' ? req.user.branch_id : (req.query.branch_id || null);
+    const conditions = ['p.is_active = 1'];
+    const params = [];
+    if (effectiveBranchId) {
+      conditions.push('(p.branch_id IS NULL OR p.branch_id = ?)');
+      params.push(effectiveBranchId);
+    }
+    const where = conditions.join(' AND ');
+
+    const totals = await db.get(`
+      SELECT
+        COALESCE(SUM(p.price * p.stock_qty), 0) AS total_value_kes,
+        COALESCE(SUM(p.stock_qty), 0) AS total_units,
+        COUNT(*) AS total_products,
+        SUM(CASE WHEN p.stock_qty = 0 THEN 1 ELSE 0 END) AS out_of_stock_count,
+        SUM(CASE WHEN p.stock_qty > 0 AND p.stock_qty <= 10 THEN 1 ELSE 0 END) AS low_stock_count
+      FROM products p
+      WHERE ${where}
+    `, params);
+
+    const byCategory = await db.all(`
+      SELECT c.name AS category, COUNT(*) AS product_count,
+             COALESCE(SUM(p.stock_qty), 0) AS units,
+             COALESCE(SUM(p.price * p.stock_qty), 0) AS value_kes
+      FROM products p
+      LEFT JOIN categories c ON c.id = p.category_id
+      WHERE ${where}
+      GROUP BY c.name
+      ORDER BY value_kes DESC
+    `, params);
+
+    const topValue = await db.all(`
+      SELECT p.name, p.code, p.stock_qty, p.price, (p.price * p.stock_qty) AS value_kes
+      FROM products p
+      WHERE ${where}
+      ORDER BY value_kes DESC
+      LIMIT 10
+    `, params);
+
+    res.json({
+      total_value_kes: totals.total_value_kes,
+      total_units: totals.total_units,
+      total_products: totals.total_products,
+      out_of_stock_count: totals.out_of_stock_count,
+      low_stock_count: totals.low_stock_count,
+      by_category: byCategory,
+      top_value_items: topValue,
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Failed to load stock report' });
+  }
+});
+
 // GET /api/admin/sales-by-category — revenue breakdown, useful for reporting
 router.get('/sales-by-category', async (req, res) => {
   try {
