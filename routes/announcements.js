@@ -38,6 +38,39 @@ async function isRequestingAdmin(req) {
   }
 }
 
+const VALID_ANIMATIONS = ['fade', 'slide', 'typewriter', 'zoom', 'flip'];
+
+// GET /api/announcements/settings — public, the storefront ticker uses this
+// to know which animation style to play. Must be defined before PUT /:id so
+// "settings" doesn't get mistaken for an announcement id.
+router.get('/settings', async (req, res) => {
+  try {
+    const row = await db.get("SELECT value FROM settings WHERE key = 'ticker_animation'");
+    res.json({ animation: (row && VALID_ANIMATIONS.includes(row.value)) ? row.value : 'fade' });
+  } catch (e) {
+    console.error(e);
+    res.json({ animation: 'fade' }); // never block the ticker over a settings read failure
+  }
+});
+
+// PUT /api/announcements/settings — admin/branch_admin picks the animation style
+router.put('/settings', requireAuth, requireRole('admin', 'branch_admin'), async (req, res) => {
+  try {
+    const { animation } = req.body;
+    if (!VALID_ANIMATIONS.includes(animation)) {
+      return res.status(400).json({ error: `Animation must be one of: ${VALID_ANIMATIONS.join(', ')}` });
+    }
+    await db.run(
+      "INSERT INTO settings (key, value) VALUES ('ticker_animation', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+      [animation]
+    );
+    res.json({ updated: true, animation });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Failed to update animation setting' });
+  }
+});
+
 // POST /api/announcements — add a message (admin/branch_admin)
 router.post('/', requireAuth, requireRole('admin', 'branch_admin'), async (req, res) => {
   try {
